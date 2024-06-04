@@ -607,6 +607,7 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
 
   // load seeds from file
   // std::string seed_file(dataset);
+  // seed_file = "dataset/" + seed_file;
   // seed_file += "/seeds_" + std::to_string(n_subgraph) + ".bin";
   // int64_t *seeds_fromfile = readSeedsFromFile<int64_t>(seed_file, n_subgraph);
 
@@ -680,10 +681,6 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   // block[2]=1;
   // printf("Start while loop.\n");
 
-  H_ERR(cudaMemcpy(ggraph.adj_list, ginst->adj_list, edge_count * sizeof(vertex_t), cudaMemcpyHostToDevice));
-  H_ERR(cudaMemcpy(ggraph.beg_pos, ginst->beg_pos, (vertex_count + 1) * sizeof(index_t), cudaMemcpyHostToDevice));
-  HRR(cudaDeviceSynchronize());
-
   double time_start = wtime();
   while (sampling_complete == false) {
     // display("active block: ", block_active, Graph_block);
@@ -693,14 +690,14 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
       if (block_active[j] == 1) active_block_count[j] += 1;
     }
     if (block_active[0]) {
-      // H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id1]],
-      //                       &ginst->adj_list[adj_size_list[block_id1]],
-      //                       (adj_size_list[block_id2] - adj_size_list[block_id1]) * sizeof(vertex_t),
-      //                       cudaMemcpyHostToDevice, stream1));
-      // H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id1]],
-      //                       &ginst->beg_pos[beg_size_list[block_id1]],
-      //                       (beg_size_list[block_id2] - beg_size_list[block_id1]) * sizeof(index_t),
-      //                       cudaMemcpyHostToDevice, stream1));
+      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id1]],
+                            &ginst->adj_list[adj_size_list[block_id1]],
+                            (adj_size_list[block_id2] - adj_size_list[block_id1]) * sizeof(vertex_t),
+                            cudaMemcpyHostToDevice, stream1));
+      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id1]],
+                            &ginst->beg_pos[beg_size_list[block_id1]],
+                            (beg_size_list[block_id2] - beg_size_list[block_id1]) * sizeof(index_t),
+                            cudaMemcpyHostToDevice, stream1));
       check<<<n_blocks, n_threads, 0, stream1>>>(
           Graph_block_size, 0, block_id1, ggraph.adj_list, ggraph.beg_pos,
           ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
@@ -711,14 +708,14 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[1]) {
-      // H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id2]],
-      //                       &ginst->adj_list[adj_size_list[block_id2]],
-      //                       (adj_size_list[block_id3] - adj_size_list[block_id2]) * sizeof(vertex_t),
-      //                       cudaMemcpyHostToDevice, stream2));
-      // H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id2]],
-      //                       &ginst->beg_pos[beg_size_list[block_id2]],
-      //                       (beg_size_list[block_id3] - beg_size_list[block_id2]) * sizeof(index_t),
-      //                       cudaMemcpyHostToDevice, stream2));
+      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id2]],
+                            &ginst->adj_list[adj_size_list[block_id2]],
+                            (adj_size_list[block_id3] - adj_size_list[block_id2]) * sizeof(vertex_t),
+                            cudaMemcpyHostToDevice, stream2));
+      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id2]],
+                            &ginst->beg_pos[beg_size_list[block_id2]],
+                            (beg_size_list[block_id3] - beg_size_list[block_id2]) * sizeof(index_t),
+                            cudaMemcpyHostToDevice, stream2));
       check<<<n_blocks, n_threads, 1, stream2>>>(
           Graph_block_size, 1, block_id2, ggraph.adj_list, ggraph.beg_pos,
           ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
@@ -729,14 +726,14 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[2]) {
-      // H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id3]],
-      //                       &ginst->adj_list[adj_size_list[block_id3]],
-      //                       (adj_size_list[block_id4] - adj_size_list[block_id3]) * sizeof(vertex_t),
-      //                       cudaMemcpyHostToDevice, stream3));
-      // H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id3]],
-      //                       &ginst->beg_pos[beg_size_list[block_id3]],
-      //                       (beg_size_list[block_id4] - beg_size_list[block_id3]) * sizeof(index_t),
-      //                       cudaMemcpyHostToDevice, stream3));
+      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id3]],
+                            &ginst->adj_list[adj_size_list[block_id3]],
+                            (adj_size_list[block_id4] - adj_size_list[block_id3]) * sizeof(vertex_t),
+                            cudaMemcpyHostToDevice, stream3));
+      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id3]],
+                            &ginst->beg_pos[beg_size_list[block_id3]],
+                            (beg_size_list[block_id4] - beg_size_list[block_id3]) * sizeof(index_t),
+                            cudaMemcpyHostToDevice, stream3));
       check<<<n_blocks, n_threads, 2, stream3>>>(
           Graph_block_size, 2, block_id3, ggraph.adj_list, ggraph.beg_pos,
           ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
@@ -747,14 +744,14 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[3]) {
-      // H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id4]],
-      //                       &ginst->adj_list[adj_size_list[block_id4]],
-      //                       (adj_size_list[4] - adj_size_list[block_id4]) * sizeof(vertex_t),
-      //                       cudaMemcpyHostToDevice, stream4));
-      // H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id4]],
-      //                       &ginst->beg_pos[beg_size_list[block_id4]],
-      //                       (beg_size_list[4] - beg_size_list[block_id4]) * sizeof(index_t),
-      //                       cudaMemcpyHostToDevice, stream4));
+      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id4]],
+                            &ginst->adj_list[adj_size_list[block_id4]],
+                            (adj_size_list[4] - adj_size_list[block_id4]) * sizeof(vertex_t),
+                            cudaMemcpyHostToDevice, stream4));
+      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id4]],
+                            &ginst->beg_pos[beg_size_list[block_id4]],
+                            (beg_size_list[4] - beg_size_list[block_id4]) * sizeof(index_t),
+                            cudaMemcpyHostToDevice, stream4));
       check<<<n_blocks, n_threads, 3, stream4>>>(
           Graph_block_size, 3, block_id4, ggraph.adj_list, ggraph.beg_pos,
           ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
