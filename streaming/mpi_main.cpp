@@ -36,13 +36,14 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank); 
     int global_sum;
     //SampleSize = SampleSize/total_GPU;
-   args=Sampler(argv[2],argv[3], n_blocks, n_threads, n_subgraph, FrontierSize, NeighborSize, Depth, args, myrank); 
+    args = Sampler(argv[1], argv[2], argv[3], n_blocks, n_threads, n_subgraph, FrontierSize, NeighborSize, Depth, args, myrank); 
     MPI_Reduce(&args.time, &global_max_time, 1, MPI_DOUBLE,MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&args.time, &global_min_time, 1, MPI_DOUBLE,MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&args.sampled_edges, &global_sampled_edges, 1, MPI_INT,MPI_SUM, 0, MPI_COMM_WORLD);
     float rate = global_sampled_edges/global_max_time/1000000;
     if(myrank==0)
     {
-        printf("%s,%f,%f\n",argv[1],global_min_time,global_max_time);
+        printf("%s,%f,%f,%d,%f\n",argv[1],global_min_time,global_max_time, global_sampled_edges, rate);
     }
     MPI_Finalize();
    return 0;
