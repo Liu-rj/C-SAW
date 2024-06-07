@@ -333,7 +333,10 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
       prefix = 1;
     }
     int thread_flag = 0;
-    if ((warp_tid < n_child) && (warp_tid < neighbor_length)) thread_flag = 1;
+    // sampling without replacement
+    // if ((warp_tid < n_child) && (warp_tid < neighbor_length)) thread_flag = 1;
+    // sampling with replacement
+    if (warp_tid < n_child) thread_flag = 1;
     if (thread_flag) new_neighbor = adj_list[curand(&local_state) % neighbor_length + neighbor_start];
     // if (prefix) {
     //   // For each neighbor, calculate the degree of its neighbor
@@ -506,7 +509,14 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   int BUCKETS = 128;
   int total_mem_for_hash = n_blocks * PER_BLOCK_WARP * BUCKETS * BUCKET_SIZE;
   int total_mem_for_bitmap = n_blocks * PER_BLOCK_WARP * 300;
-  int queue_size = neighbor_size * depth * n_subgraph;
+  int queue_size = 0;
+  if (n_child == 1) {
+    queue_size = (depth + 1) * n_subgraph;
+  } else if (n_child > 1) {
+    for (int i = 0; i <= depth; i++) queue_size += n_subgraph * pow(n_child, i);
+  } else {
+    std::cerr << "Invalid n_child value: " << n_child << std::endl;
+  }
   int Graph_block = 4;
   int total_queue_memory = queue_size * Graph_block;
   printf("Total Queue Memory: %d\n", total_queue_memory);
