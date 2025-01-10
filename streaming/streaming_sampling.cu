@@ -19,6 +19,8 @@
 #include "sampler.cuh"
 #include "wtime.h"
 
+#define int int64_t
+
 using namespace std;
 
 // Template function to convert any type to string
@@ -76,9 +78,9 @@ int sum(int length, int *a) {
 void display(char *str, int *a, int length) {
   printf("%s", str);
   for (int i = 0; i < length - 1; i++) {
-    printf("%d,", a[i]);
+    printf("%ld,", a[i]);
   }
-  printf("%d\n", a[length - 1]);
+  printf("%ld\n", a[length - 1]);
 }
 
 __device__ void d_display(int *a, int *b, int length) {
@@ -95,13 +97,27 @@ void prefix_sum(int length, int *prefix_list) {
   }
 }
 
-__device__ void acquire_lock(int *lock) {
+inline __device__ int64_t AtomicAdd(int64_t *const address, const int64_t val) {
+  using Type = unsigned long long int32_t;  // NOLINT
+
+  static_assert(sizeof(Type) == sizeof(*address), "Type width must match");
+  return atomicAdd(reinterpret_cast<Type *>(address), static_cast<Type>(val));
+}
+
+inline __device__ int64_t AtomicOr(int64_t *const address, const int64_t val) {
+  using Type = unsigned long long int32_t;  // NOLINT
+
+  static_assert(sizeof(Type) == sizeof(*address), "Type width must match");
+  return atomicOr(reinterpret_cast<Type *>(address), static_cast<Type>(val));
+}
+
+__device__ void acquire_lock(int32_t *lock) {
   while (0 != atomicCAS(lock, 0, 1)) {
   }
   __threadfence();
 }
 
-__device__ void release_lock(int *lock) {
+__device__ void release_lock(int32_t *lock) {
   __threadfence();
   atomicExch(lock, 0);
 }
@@ -160,7 +176,7 @@ __device__ int bitmap_binary_search(int start, int end, float value, float *arr,
   // int bit_block_index= bitmap_pos % bitmap_width;
   int initial_mask = 1;
   int mask = (initial_mask << bit_block_pos);
-  int status = atomicOr(&bitmap[bit_block_index + bitmap_start], mask);
+  int status = AtomicOr(&bitmap[bit_block_index + bitmap_start], mask);
   is_in = (mask & status) >> bit_block_pos;
 
   // is_in= 0x00000001 & (status >> bit_block_pos);
@@ -255,8 +271,8 @@ __device__ void gpu_prefix(int total_step, int warp_tid, float *degree_l,
   }
 }
 
-__global__ void check(int Graph_block_size, int streamid, int block_id,
-                      vertex_t *adj_list, index_t *beg_pos,
+__global__ void check(int Graph_block_size, int streamid, int block_id, 
+                      int adj_offset, int beg_offset, vertex_t *adj_list, index_t *beg_pos,
                       weight_t *weight_list, int vertex_count,
                       curandState *global_state, int *g_node_list,
                       int *g_edge_list, int *neigh_l, float *degree_l,
@@ -264,7 +280,7 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
                       int *hashtable, int *bitmap, int total_subgraphs,
                       int *node, int *queue, int *sample_id, int *depth_tracker,
                       int *qstart_global, int *qstop_global, int *payloadend_global, int *g_sub_index,
-                      int n_child, int depth_limit, int sample_size, int queue_size, int* access_count, int* lock) {
+                      int n_child, int depth_limit, int sample_size, int queue_size, int* access_count, int32_t* lock) {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
   // int __shared__ q1_start, q2_end, depth, q2_start, q2_stop;
   int temp_queue_start = qstart_global[block_id];
@@ -317,10 +333,10 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
     __syncwarp();
 
     vertex = queue[q_start + queue_start_address];
-    if (warp_tid == 0) atomicAdd(&access_count[vertex], 1);
+    if (warp_tid == 0) AtomicAdd(&access_count[vertex], 1);
     //if(warp_tid==0){printf("Block_id:%d, StreamId: %d, G_warpID: %d,SampleID:%d, vertex:%d, q_stop:%d,q_start:%d,depth:%d\n",block_id,streamid,G_warpID,sample_id[q_start+queue_start_address],vertex,qstop_global[block_id],q_start,depth_tracker[q_start+queue_start_address]);}
-    int neighbor_start = beg_pos[vertex];
-    int neighbor_end = beg_pos[vertex + 1];
+    int neighbor_start = beg_pos[vertex - beg_offset];
+    int neighbor_end = beg_pos[vertex + 1 - beg_offset];
     int neighbor_length = neighbor_end - neighbor_start;
     edges_traversed += neighbor_length;
     if (neighbor_length == 0) continue;
@@ -337,7 +353,7 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
     // if ((warp_tid < n_child) && (warp_tid < neighbor_length)) thread_flag = 1;
     // sampling with replacement
     if (warp_tid < n_child) thread_flag = 1;
-    if (thread_flag) new_neighbor = adj_list[curand(&local_state) % neighbor_length + neighbor_start];
+    if (thread_flag) new_neighbor = adj_list[curand(&local_state) % neighbor_length + neighbor_start - adj_offset];
     // if (prefix) {
     //   // For each neighbor, calculate the degree of its neighbor
     //   int index = offset_d_n + warp_tid;  // use block and thread Id for index
@@ -415,7 +431,7 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
       // hashtable[index] = new_neighbor;
       // hashtable[index * BUCKETS + bin + BIN_START] = new_neighbor;
       // int g_sub_start = sample_id[q_start + queue_start_address] * sample_size;
-      int g_to = atomicAdd(&g_sub_index[sample_id[q_start + queue_start_address]], 1);
+      int g_to = AtomicAdd(&g_sub_index[sample_id[q_start + queue_start_address]], 1);
       //g_node_list[g_to + g_sub_start] = vertex;
       //g_edge_list[g_to + g_sub_start] = new_neighbor;
       // printf("transit: %d,%d,%d,%d\n",vertex,new_neighbor,sample_id[q_start + queue_start_address],depth_tracker[q_start + queue_start_address]);
@@ -423,13 +439,13 @@ __global__ void check(int Graph_block_size, int streamid, int block_id,
         int new_bin = new_neighbor / Graph_block_size;
         if (new_bin >= 4) new_bin = 3;
         int new_queue_start = new_bin * queue_size;
-        int to = atomicAdd(&qstop_global[new_bin], 1);
+        int to = AtomicAdd(&qstop_global[new_bin], 1);
         queue[to + new_queue_start] = new_neighbor;
         sample_id[to + new_queue_start] =
             sample_id[q_start + queue_start_address];
         depth_tracker[to + new_queue_start] =
             depth_tracker[q_start + queue_start_address] + 1;
-        atomicAdd(&payloadend_global[new_bin], 1);
+        AtomicAdd(&payloadend_global[new_bin], 1);
         // printf("Added: %d,  to queue at index %d and block %d, local_index: %d, offset: %d, new_d: %d, prev_d: %d\n",new_neighbor,to + new_queue_start,new_bin, to, new_queue_start,depth_tracker[to + new_queue_start], depth_tracker[q_start + queue_start_address]);
       }
     }
@@ -467,9 +483,7 @@ int block_augument(int blocks, int vertex_count, index_t *beg_pos,
   int block_size = (vertex_count) / blocks;
   for (int i = 0; i < (blocks + 1); i += 1) {
     int start_block = i * block_size;
-    if (i == blocks) {
-      start_block = vertex_count;
-    }
+    if (i == blocks) start_block = vertex_count;
     beg_size_list[i] = start_block;
     int start_adj = beg_pos[start_block];
     adj_size_list[i] = start_adj;
@@ -489,10 +503,10 @@ FILE_TYPE* readSeedsFromFile(const std::string& filename, int n_subgraph) {
   return seeds;
 }
 
-struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_blocks,
-                         int n_threads, int n_subgraph, int frontier_size,
-                         int neighbor_size, int depth, struct arguments args,
-                         int rank) {
+struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int32_t n_blocks,
+                         int32_t n_threads, int32_t n_subgraph, int32_t frontier_size,
+                         int32_t neighbor_size, int32_t depth, struct arguments args,
+                         int32_t rank) {
   // if(args!=7){std::cout<<"Wrong input\n"; return -1;}
   //n_child, depth, each_subgraph, queue_size
   // cout<<"\nblocks:"<<n_blocks<<"\tThreads:"<<n_threads<<"\tSubgraphs:"<<n_subgraph<<"\n";
@@ -519,7 +533,7 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   }
   int Graph_block = 4;
   int total_queue_memory = queue_size * Graph_block;
-  printf("Total Queue Memory: %d\n", total_queue_memory);
+  printf("Total Queue Memory: %ld\n", total_queue_memory);
 
   // std::cout<<"Input: ./exe beg csr nblocks nthreads\n";
   const char *beg_file = beg;
@@ -533,6 +547,7 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   int vertex_count = ginst->vert_count;
   int edge_count = ginst->edge_count;
   int Graph_block_size = vertex_count / Graph_block;
+  printf("#Vertex:%ld, #Edge:%ld\n", vertex_count, edge_count);
   // int Graph_block_size=2000;
   /*
   printf("Size of blocks\n");
@@ -544,7 +559,7 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   */
   curandState *d_state;
   cudaMalloc(&d_state, sizeof(curandState));
-  gpu_graph ggraph(ginst);
+  // gpu_graph ggraph(ginst);
   int *node_list = (int *)malloc(sizeof(int) * total_length);
   int *set_list = (int *)malloc(sizeof(int) * total_length);
   float *n_random = (float *)malloc(sizeof(float) * n_threads);
@@ -560,12 +575,12 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     start_queue[n] = 0;
   }
   // 200 --> 370 Mteps
-  int numBlocks;
+  int32_t numBlocks;
   // cudaGetDevice(&device);
   // cudaGetDeviceProperties(&prop, device);
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocks, check, n_threads, 0);
 
-  int deviceCount;
+  int32_t deviceCount;
   HRR(cudaGetDeviceCount(&deviceCount));
   // printf("My rank: %d, totaldevice: %d\n", rank,deviceCount);
   // HRR(cudaSetDevice(rank%deviceCount));
@@ -582,26 +597,27 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     degree_list[i] = ginst->beg_pos[neighbor + 1] - ginst->beg_pos[neighbor];
   }
   int *hashtable, *bitmap, *node, *queue, *qstop_global, *qstart_global, *payloadend_global,
-      *sample_id, *depth_tracker, *g_sub_index, *degree_l, *prefix_status, *access_count, *lock;
+      *sample_id, *depth_tracker, *g_sub_index, *degree_l, *prefix_status, *access_count;
+  int32_t *lock;
   // Size of blocks
-  HRR(cudaMalloc((void **)&d_total, sizeof(int) * n_subgraph));
-  HRR(cudaMalloc((void **)&node, sizeof(int) * 2));
-  HRR(cudaMalloc((void **)&degree_l, sizeof(int) * ginst->edge_count));
-  HRR(cudaMalloc((void **)&prefix_status, sizeof(int) * ginst->edge_count));
-  HRR(cudaMalloc((void **)&d_degree_l, sizeof(float) * ginst->edge_count));
+  // HRR(cudaMalloc((void **)&d_total, sizeof(int) * n_subgraph));
+  // HRR(cudaMalloc((void **)&node, sizeof(int) * 2));
+  // HRR(cudaMalloc((void **)&degree_l, sizeof(int) * ginst->edge_count));
+  // HRR(cudaMalloc((void **)&prefix_status, sizeof(int) * ginst->edge_count));
+  // HRR(cudaMalloc((void **)&d_degree_l, sizeof(float) * ginst->edge_count));
   HRR(cudaMalloc((void **)&qstart_global, sizeof(int) * Graph_block));
   HRR(cudaMalloc((void **)&qstop_global, sizeof(int) * Graph_block));
   HRR(cudaMalloc((void **)&payloadend_global, sizeof(int) * Graph_block));
-  HRR(cudaMalloc((void **)&d_node_list, sizeof(int) * total_length));
-  HRR(cudaMalloc((void **)&d_edge_list, sizeof(int) * total_length));
-  HRR(cudaMalloc((void **)&d_neigh_l, sizeof(int) * neighbor_length_max));
+  // HRR(cudaMalloc((void **)&d_node_list, sizeof(int) * total_length));
+  // HRR(cudaMalloc((void **)&d_edge_list, sizeof(int) * total_length));
+  // HRR(cudaMalloc((void **)&d_neigh_l, sizeof(int) * neighbor_length_max));
   HRR(cudaMalloc((void **)&hashtable, sizeof(int) * total_mem_for_hash));
   HRR(cudaMalloc((void **)&bitmap, sizeof(int) * total_mem_for_bitmap));
   HRR(cudaMalloc((void **)&d_degree_l, sizeof(float) * neighbor_length_max));
   HRR(cudaMalloc((void **)&queue, sizeof(int) * total_queue_memory));
   HRR(cudaMalloc((void **)&sample_id, sizeof(int) * total_queue_memory));
   HRR(cudaMalloc((void **)&depth_tracker, sizeof(int) * total_queue_memory));
-  HRR(cudaMalloc((void **)&g_sub_index, sizeof(int) * total_queue_memory));
+  HRR(cudaMalloc((void **)&g_sub_index, sizeof(int) * n_subgraph));
   HRR(cudaMalloc((void **)&access_count, sizeof(int) * ginst->vert_count));
   HRR(cudaMalloc((void **)&lock, sizeof(int)));
   HRR(cudaMemset(access_count, 0, sizeof(int) * ginst->vert_count));
@@ -635,8 +651,10 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     h_depth_tracker[pos] = 0;
     // printf("N_subgraph: %d, Seed:%d, Bin:%d\n",n,new_seed,bin_new);
   }
-  /*	For streaming partition */
+  display("seeds_counter: ", seeds_counter, Graph_block);
+  display("start_queue: ", start_queue, Graph_block);
 
+  /*	For streaming partition */
   HRR(cudaMemcpy(queue, seeds, sizeof(int) * total_queue_memory,
                  cudaMemcpyHostToDevice));
   HRR(cudaMemcpy(qstart_global, start_queue, sizeof(int) * Graph_block,
@@ -672,8 +690,19 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
   int *active_block_count = (int *)malloc(sizeof(int) * Graph_block);
   memset(active_block_count, 0, sizeof(int) * Graph_block);
 
-  display("seeds_counter: ", seeds_counter, Graph_block);
-  display("start_queue: ", start_queue, Graph_block);
+  // pre-allocate memory for the largest partition of gpugraph
+  int max_partition_adj_len = 0;
+  for (int j = 0; j < Graph_block; j++) {
+    max_partition_adj_len = std::max(max_partition_adj_len,
+                                     adj_size_list[j + 1] - adj_size_list[j]);
+  }
+  index_t *d_beg_pos;
+  vertex_t *d_adj_list;
+  weight_t *d_weight_list;
+  HRR(cudaMalloc((void **)&d_beg_pos, sizeof(index_t) * (beg_size_list[4] - beg_size_list[3] + 1)));
+  HRR(cudaMalloc((void **)&d_adj_list, sizeof(vertex_t) * max_partition_adj_len));
+
+  // determine the initial active block
   int max_value = 0;
   for (int j = 0; j < Graph_block; j++) {
     block_active[j] = 0;
@@ -700,17 +729,17 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
       if (block_active[j] == 1) active_block_count[j] += 1;
     }
     if (block_active[0]) {
-      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id1]],
+      H_ERR(cudaMemcpyAsync(d_adj_list,
                             &ginst->adj_list[adj_size_list[block_id1]],
                             (adj_size_list[block_id2] - adj_size_list[block_id1]) * sizeof(vertex_t),
                             cudaMemcpyHostToDevice, stream1));
-      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id1]],
+      H_ERR(cudaMemcpyAsync(d_beg_pos,
                             &ginst->beg_pos[beg_size_list[block_id1]],
-                            (beg_size_list[block_id2] - beg_size_list[block_id1]) * sizeof(index_t),
+                            (beg_size_list[block_id2] - beg_size_list[block_id1] + 1) * sizeof(index_t),
                             cudaMemcpyHostToDevice, stream1));
       check<<<n_blocks, n_threads, 0, stream1>>>(
-          Graph_block_size, 0, block_id1, ggraph.adj_list, ggraph.beg_pos,
-          ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
+          Graph_block_size, 0, block_id1, adj_size_list[block_id1], beg_size_list[block_id1], d_adj_list, d_beg_pos,
+          d_weight_list, vertex_count, d_state, d_node_list,
           d_edge_list, d_neigh_l, d_degree_l, n_blocks, d_seed, n_threads,
           d_total, hashtable, bitmap, n_subgraph, node, queue, sample_id,
           depth_tracker, qstart_global, qstop_global, payloadend_global, g_sub_index, 
@@ -718,17 +747,17 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[1]) {
-      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id2]],
+      H_ERR(cudaMemcpyAsync(d_adj_list,
                             &ginst->adj_list[adj_size_list[block_id2]],
                             (adj_size_list[block_id3] - adj_size_list[block_id2]) * sizeof(vertex_t),
                             cudaMemcpyHostToDevice, stream2));
-      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id2]],
+      H_ERR(cudaMemcpyAsync(d_beg_pos,
                             &ginst->beg_pos[beg_size_list[block_id2]],
-                            (beg_size_list[block_id3] - beg_size_list[block_id2]) * sizeof(index_t),
+                            (beg_size_list[block_id3] - beg_size_list[block_id2] + 1) * sizeof(index_t),
                             cudaMemcpyHostToDevice, stream2));
       check<<<n_blocks, n_threads, 1, stream2>>>(
-          Graph_block_size, 1, block_id2, ggraph.adj_list, ggraph.beg_pos,
-          ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
+          Graph_block_size, 1, block_id2, adj_size_list[block_id2], beg_size_list[block_id2], d_adj_list, d_beg_pos,
+          d_weight_list, vertex_count, d_state, d_node_list,
           d_edge_list, d_neigh_l, d_degree_l, n_blocks, d_seed, n_threads,
           d_total, hashtable, bitmap, n_subgraph, node, queue, sample_id,
           depth_tracker, qstart_global, qstop_global, payloadend_global, g_sub_index,
@@ -736,17 +765,17 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[2]) {
-      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id3]],
+      H_ERR(cudaMemcpyAsync(d_adj_list,
                             &ginst->adj_list[adj_size_list[block_id3]],
                             (adj_size_list[block_id4] - adj_size_list[block_id3]) * sizeof(vertex_t),
                             cudaMemcpyHostToDevice, stream3));
-      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id3]],
+      H_ERR(cudaMemcpyAsync(d_beg_pos,
                             &ginst->beg_pos[beg_size_list[block_id3]],
-                            (beg_size_list[block_id4] - beg_size_list[block_id3]) * sizeof(index_t),
+                            (beg_size_list[block_id4] - beg_size_list[block_id3] + 1) * sizeof(index_t),
                             cudaMemcpyHostToDevice, stream3));
       check<<<n_blocks, n_threads, 2, stream3>>>(
-          Graph_block_size, 2, block_id3, ggraph.adj_list, ggraph.beg_pos,
-          ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
+          Graph_block_size, 2, block_id3, adj_size_list[block_id3], beg_size_list[block_id3], d_adj_list, d_beg_pos,
+          d_weight_list, vertex_count, d_state, d_node_list,
           d_edge_list, d_neigh_l, d_degree_l, n_blocks, d_seed, n_threads,
           d_total, hashtable, bitmap, n_subgraph, node, queue, sample_id,
           depth_tracker, qstart_global, qstop_global, payloadend_global, g_sub_index,
@@ -754,17 +783,17 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     }
 
     if (block_active[3]) {
-      H_ERR(cudaMemcpyAsync(&ggraph.adj_list[adj_size_list[block_id4]],
+      H_ERR(cudaMemcpyAsync(d_adj_list,
                             &ginst->adj_list[adj_size_list[block_id4]],
                             (adj_size_list[4] - adj_size_list[block_id4]) * sizeof(vertex_t),
                             cudaMemcpyHostToDevice, stream4));
-      H_ERR(cudaMemcpyAsync(&ggraph.beg_pos[beg_size_list[block_id4]],
+      H_ERR(cudaMemcpyAsync(d_beg_pos,
                             &ginst->beg_pos[beg_size_list[block_id4]],
-                            (beg_size_list[4] - beg_size_list[block_id4]) * sizeof(index_t),
+                            (beg_size_list[4] - beg_size_list[block_id4] + 1) * sizeof(index_t),
                             cudaMemcpyHostToDevice, stream4));
       check<<<n_blocks, n_threads, 3, stream4>>>(
-          Graph_block_size, 3, block_id4, ggraph.adj_list, ggraph.beg_pos,
-          ggraph.weight_list, ggraph.vert_count, d_state, d_node_list,
+          Graph_block_size, 3, block_id4, adj_size_list[block_id4], beg_size_list[block_id4], d_adj_list, d_beg_pos,
+          d_weight_list, vertex_count, d_state, d_node_list,
           d_edge_list, d_neigh_l, d_degree_l, n_blocks, d_seed, n_threads,
           d_total, hashtable, bitmap, n_subgraph, node, queue, sample_id,
           depth_tracker, qstart_global, qstop_global, payloadend_global, g_sub_index,
@@ -828,11 +857,11 @@ struct arguments Sampler(char dataset[100], char beg[100], char csr[100], int n_
     loaded_blocks += active_block_count[i];
   }
   double touched_ratio = (double)touched_vertices / vertex_count;
-  printf("vmax: %d, max_v: %d\n", vmax, max_v);
-  printf("Total sampled vertices: %d, Ratio: %f, counts: %d\n", touched_vertices, touched_ratio, vtouch_count);
-  printf("Total sampled edges: %d\n", counted);
-  printf("Total loaded blocks: %d\n", loaded_blocks);
-  printf("#Vertex:%d, #Edge:%d\n", vertex_count, edge_count);
+  printf("vmax: %ld, max_v: %ld\n", vmax, max_v);
+  printf("Total sampled vertices: %ld, Ratio: %f, counts: %ld\n", touched_vertices, touched_ratio, vtouch_count);
+  printf("Total sampled edges: %ld\n", counted);
+  printf("Total loaded blocks: %ld\n", loaded_blocks);
+  printf("#Vertex:%ld, #Edge:%ld\n", vertex_count, edge_count);
 
   writeLineToCSV("logs/output.csv", {dataset, to_string(vertex_count), to_string(edge_count), to_string(n_subgraph), to_string(depth),
     to_string(neighbor_size), to_string(touched_vertices), to_string(touched_ratio, 4), to_string(loaded_blocks), to_string(counted), to_string(cmp_time, 3)});
